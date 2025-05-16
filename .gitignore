@@ -1,1 +1,13 @@
 *.csv
+
+*.pt
+
+temp/*
+
+env.sh
+
+__pycache__/
+
+output/*
+
+*.sh
