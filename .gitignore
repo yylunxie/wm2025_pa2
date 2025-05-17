@@ -11,3 +11,8 @@ __pycache__/
 output/*
 
 *.sh
+
+submission/
+
+exp/*
+*.zip

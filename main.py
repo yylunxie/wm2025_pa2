@@ -8,7 +8,7 @@ import argparse
 from tqdm import tqdm
 from utils import mapk
 import torch.utils.data as data
-from model_bpr import BPRMF
+from model import BPRMF
 from dataset import PositivePairDataset
 from collections import defaultdict
 
@@ -98,14 +98,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="train.csv")
     parser.add_argument("--output_path", type=str, default="output/bpr_submission.csv")
-    parser.add_argument("--mode", type=str, default="val")
+    parser.add_argument("--mode", type=str, default="val", choices=["train", "val"])
+    parser.add_argument("--loss", type=str, default="bpr", choices=["bpr", "bce"])
     parser.add_argument("--embedding_dim", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--neg", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--save_model", action="store_true", help="Save model after training")
     args = parser.parse_args()
+    
     best_score = 0
     best_epoch = -1
     
@@ -150,9 +151,7 @@ def main():
     if args.mode == "train":
         model = BPRMF(num_users, num_items, embedding_dim=args.embedding_dim).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        
         for epoch in range(args.epochs):
-
             total_loss = 0
             for batch_users, batch_pos_items in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
             # for batch in dataloader:
@@ -193,14 +192,34 @@ def main():
                 i_tensor = torch.LongTensor(triplet_pos).to(device)
                 j_tensor = torch.LongTensor(triplet_neg).to(device)
                 
-                u_emb = model.user_embedding(u_tensor)
-                i_emb = model.item_embedding(i_tensor)
-                j_emb = model.item_embedding(j_tensor)
+                if args.loss == "bce":
+                    # BCE loss
+                    u_emb = model.user_embedding(torch.cat([u_tensor, u_tensor]))
+                    item_emb = model.item_embedding(torch.cat([i_tensor, j_tensor]))
+                    labels = torch.cat([
+                        torch.ones(len(i_tensor)),
+                        torch.zeros(len(j_tensor))
+                    ]).to(device)
+                    scores = (u_emb * item_emb).sum(dim=1)
+                    loss = torch.nn.functional.binary_cross_entropy_with_logits(scores, labels)
+                elif args.loss == "bpr":
+                    # BPR loss
+                    u_emb = model.user_embedding(u_tensor)
+                    i_emb = model.item_embedding(i_tensor)
+                    j_emb = model.item_embedding(j_tensor)
+                    
+                    pos_scores = (u_emb * i_emb).sum(dim=1)
+                    neg_scores = (u_emb * j_emb).sum(dim=1)
+                    
+                    loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+                # u_emb = model.user_embedding(u_tensor)
+                # i_emb = model.item_embedding(i_tensor)
+                # j_emb = model.item_embedding(j_tensor)
                 
-                pos_scores = (u_emb * i_emb).sum(dim=1)
-                neg_scores = (u_emb * j_emb).sum(dim=1)
+                # pos_scores = (u_emb * i_emb).sum(dim=1)
+                # neg_scores = (u_emb * j_emb).sum(dim=1)
                 
-                loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+                # loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -215,7 +234,7 @@ def main():
             if val_map > best_score:
                 best_score = val_map
                 best_epoch = epoch
-                model_path = f"weights/d{args.embedding_dim}/best_model_bpr.pt"
+                model_path = f"weights/{args.loss}/d{args.embedding_dim}/best_model_{args.loss}.pt"
                 torch.save(model.state_dict(), model_path)
                 print(f"✅ New best model saved at epoch {epoch+1} with MAP@50 = {val_map:.4f}")
     # elif args.mode == "val":
@@ -227,12 +246,13 @@ def main():
     generate_submission(model, user_items, train_data=train_data, output_path=args.output_path, device=device)
     print(f"🏁 Best MAP@50 = {best_score:.4f} at epoch {best_epoch+1}")
     # Log results
-    with open("dimension_results.csv", "a") as f:
-        if not os.path.exists("dimension_results.csv") or os.path.getsize("dimension_results.csv") == 0:
+    log_file_path = f"dimension_results_{args.loss}.csv"
+    with open(log_file_path, "a") as f:
+        if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) == 0:
             f.write("embedding_dim,best_map@50,best_epoch\n")
         f.write(f"{args.embedding_dim},{best_score:.4f},{best_epoch+1}\n")
     
-    print(f"Results for dimension {args.embedding_dim} added to dimension_results.csv")
+    print(f"Results for dimension {args.embedding_dim} added to {log_file_path}")
     
 
 if __name__ == "__main__":
